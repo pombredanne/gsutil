@@ -1,5 +1,4 @@
-#!/usr/bin/env python
-# coding=utf8
+# -*- coding: utf-8 -*-
 # Copyright 2011 Google Inc. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,97 +12,139 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Class that runs a named gsutil command."""
 
-import boto
+from __future__ import absolute_import
+
 import difflib
 import logging
-import pkgutil
 import os
+import pkgutil
 import sys
 import textwrap
 import time
 
+import boto
 from boto.storage_uri import BucketStorageUri
 import gslib
-import gslib.commands
+from gslib import metrics
+from gslib.cloud_api_delegator import CloudApiDelegator
 from gslib.command import Command
-from gslib.command import COMMAND_NAME
-from gslib.command import COMMAND_NAME_ALIASES
+from gslib.command import CreateGsutilLogger
+from gslib.command import GetFailureCount
 from gslib.command import OLD_ALIAS_MAP
 from gslib.command import ShutDownGsutil
+import gslib.commands
+from gslib.cs_api_map import ApiSelector
+from gslib.cs_api_map import GsutilApiClassMapFactory
+from gslib.cs_api_map import GsutilApiMapFactory
 from gslib.exception import CommandException
-from gslib.help_provider import SUBCOMMAND_HELP_TEXT
-from gslib.storage_uri_builder import StorageUriBuilder
+from gslib.gcs_json_api import GcsJsonApi
+from gslib.no_op_credentials import NoOpCredentials
+from gslib.tab_complete import MakeCompleter
+from gslib.util import CheckMultiprocessingAvailableAndInit
 from gslib.util import CompareVersions
-from gslib.util import ConfigureNoOpAuthIfNeeded
+from gslib.util import DiscardMessagesQueue
 from gslib.util import GetGsutilVersionModifiedTime
 from gslib.util import GSUTIL_PUB_TARBALL
+from gslib.util import InsistAsciiHeader
+from gslib.util import InsistAsciiHeaderValue
+from gslib.util import IsCustomMetadataHeader
 from gslib.util import IsRunningInteractively
 from gslib.util import LAST_CHECKED_FOR_GSUTIL_UPDATE_TIMESTAMP_FILE
 from gslib.util import LookUpGsutilVersion
-from gslib.util import MultiprocessingIsAvailable
 from gslib.util import RELEASE_NOTES_URL
 from gslib.util import SECONDS_PER_DAY
+from gslib.util import UTF8
+
+
+def HandleHeaderCoding(headers):
+  """Handles coding of headers and their values. Alters the dict in-place.
+
+  Converts a dict of headers and their values to their appropriate types. We
+  ensure that all headers and their values will contain only ASCII characters,
+  with the exception of custom metadata header values; these values may contain
+  Unicode characters, and thus if they are not already unicode-type objects,
+  we attempt to decode them to Unicode using UTF-8 encoding.
+
+  Args:
+    headers: A dict mapping headers to their values. All keys and values must
+        be either str or unicode objects.
+
+  Raises:
+    CommandException: If a header or its value cannot be encoded in the
+        required encoding.
+  """
+  if not headers:
+    return
+
+  for key in headers:
+    InsistAsciiHeader(key)
+    if IsCustomMetadataHeader(key):
+      if not isinstance(headers[key], unicode):
+        try:
+          headers[key] = headers[key].decode(UTF8)
+        except UnicodeDecodeError:
+          raise CommandException('\n'.join(textwrap.wrap(
+              'Invalid encoding for header value (%s: %s). Values must be '
+              'decodable as Unicode. NOTE: the value printed above '
+              'replaces the problematic characters with a hex-encoded '
+              'printable representation. For more details (including how to '
+              'convert to a gsutil-compatible encoding) see `gsutil help '
+              'encoding`.' % (repr(key), repr(headers[key])))))
+    else:
+      # Non-custom-metadata headers and their values must be ASCII characters.
+      InsistAsciiHeaderValue(key, headers[key])
 
 
 def HandleArgCoding(args):
-  """
-  Handles coding of command-line args.
+  """Handles coding of command-line args. Alters the list in-place.
 
   Args:
-    args: array of command-line args.
-
-  Returns:
-    array of command-line args.
+    args: A list of command-line args.
 
   Raises:
     CommandException: if errors encountered.
   """
   # Python passes arguments from the command line as byte strings. To
-  # correctly interpret them, we decode ones other than -h and -p args (which
-  # will be passed as headers, and thus per HTTP spec should not be encoded) as
-  # utf-8. The exception is x-goog-meta-* headers, which are allowed to contain
-  # non-ASCII content (and hence, should be decoded), per
-  # https://developers.google.com/storage/docs/gsutil/addlhelp/WorkingWithObjectMetadata
-  processing_header = False
+  # correctly interpret them, we decode them as utf-8.
   for i in range(len(args)):
     arg = args[i]
-    decoded = arg.decode('utf-8')
-    if processing_header:
-      if arg.lower().startswith('x-goog-meta'):
-        args[i] = decoded
-      else:
-        try:
-          # Try to encode as ASCII to check for invalid header values (which
-          # can't be sent over HTTP).
-          decoded.encode('ascii')
-        except UnicodeEncodeError:
-          # Raise the CommandException using the decoded value because
-          # _OutputAndExit function re-encodes at the end.
-          raise CommandException(
-              'Invalid non-ASCII header value (%s).\nOnly ASCII characters are '
-              'allowed in headers other than x-goog-meta- headers' % decoded)
-    else:
-      args[i] = decoded
-    processing_header = (arg in ('-h', '-p'))
-  return args
+    if not isinstance(arg, unicode):
+      try:
+        args[i] = arg.decode(UTF8)
+      except UnicodeDecodeError:
+        raise CommandException('\n'.join(textwrap.wrap(
+            'Invalid encoding for argument (%s). Arguments must be decodable '
+            'as Unicode. NOTE: the argument printed above replaces the '
+            'problematic characters with a hex-encoded printable '
+            'representation. For more details (including how to convert to a '
+            'gsutil-compatible encoding) see `gsutil help encoding`.' %
+            repr(arg))))
 
 
 class CommandRunner(object):
+  """Runs gsutil commands and does some top-level argument handling."""
 
-  def __init__(self, config_file_list,
-                bucket_storage_uri_class=BucketStorageUri):
-    """
+  def __init__(self, bucket_storage_uri_class=BucketStorageUri,
+               gsutil_api_class_map_factory=GsutilApiClassMapFactory,
+               command_map=None):
+    """Instantiates a CommandRunner.
+
     Args:
-      config_file_list: Config file list returned by GetBotoConfigFileList().
       bucket_storage_uri_class: Class to instantiate for cloud StorageUris.
                                 Settable for testing/mocking.
+      gsutil_api_class_map_factory: Creates map of cloud storage interfaces.
+                                    Settable for testing/mocking.
+      command_map: Map of command names to their implementations for
+                   testing/mocking. If not set, the map is built dynamically.
     """
-    self.config_file_list = config_file_list
     self.bucket_storage_uri_class = bucket_storage_uri_class
-    self.command_map = self._LoadCommandMap()
+    self.gsutil_api_class_map_factory = gsutil_api_class_map_factory
+    if command_map:
+      self.command_map = command_map
+    else:
+      self.command_map = self._LoadCommandMap()
 
   def _LoadCommandMap(self):
     """Returns dict mapping each command_name to implementing class."""
@@ -114,38 +155,111 @@ class CommandRunner(object):
     command_map = {}
     # Only include Command subclasses in the dict.
     for command in Command.__subclasses__():
-      command_map[command.command_spec[COMMAND_NAME]] = command
-      for command_name_aliases in command.command_spec[COMMAND_NAME_ALIASES]:
+      command_map[command.command_spec.command_name] = command
+      for command_name_aliases in command.command_spec.command_name_aliases:
         command_map[command_name_aliases] = command
     return command_map
 
-  def RunNamedCommand(self, command_name, args=None, headers=None, debug=0,
-                      parallel_operations=False, test_method=None,
-                      skip_update_check=False, logging_filters=None):
-    """Runs the named command. Used by gsutil main, commands built atop
-      other commands, and tests .
+  def _ConfigureCommandArgumentParserArguments(
+      self, parser, arguments, gsutil_api):
+    """Configures an argument parser with the given arguments.
 
-      Args:
-        command_name: The name of the command being run.
-        args: Command-line args (arg0 = actual arg, not command name ala bash).
-        headers: Dictionary containing optional HTTP headers to pass to boto.
-        debug: Debug level to pass in to boto connection (range 0..3).
-        parallel_operations: Should command operations be executed in parallel?
-        test_method: Optional general purpose method for testing purposes.
-                     Application and semantics of this method will vary by
-                     command and test type.
-        skip_update_check: Set to True to disable checking for gsutil updates.
-        logging_filters: Optional list of logging.Filters to apply to this
-                         command's logger.
-
-      Raises:
-        CommandException: if errors encountered.
+    Args:
+      parser: argparse parser object.
+      arguments: array of CommandArgument objects.
+      gsutil_api: gsutil Cloud API instance to use.
+    Raises:
+      RuntimeError: if argument is configured with unsupported completer
     """
-    ConfigureNoOpAuthIfNeeded()
+    for command_argument in arguments:
+      action = parser.add_argument(
+          *command_argument.args, **command_argument.kwargs)
+      if command_argument.completer:
+        action.completer = MakeCompleter(command_argument.completer, gsutil_api)
+
+  def ConfigureCommandArgumentParsers(self, subparsers):
+    """Configures argparse arguments and argcomplete completers for commands.
+
+    Args:
+      subparsers: argparse object that can be used to add parsers for
+                  subcommands (called just 'commands' in gsutil)
+    """
+
+    # This should match the support map for the "ls" command.
+    support_map = {
+        'gs': [ApiSelector.XML, ApiSelector.JSON],
+        's3': [ApiSelector.XML]
+    }
+    default_map = {
+        'gs': ApiSelector.JSON,
+        's3': ApiSelector.XML
+    }
+    gsutil_api_map = GsutilApiMapFactory.GetApiMap(
+        self.gsutil_api_class_map_factory, support_map, default_map)
+
+    logger = CreateGsutilLogger('tab_complete')
+    gsutil_api = CloudApiDelegator(
+        self.bucket_storage_uri_class, gsutil_api_map,
+        logger, DiscardMessagesQueue(), debug=0)
+
+    for command in set(self.command_map.values()):
+      command_parser = subparsers.add_parser(
+          command.command_spec.command_name, add_help=False)
+      if isinstance(command.command_spec.argparse_arguments, dict):
+        subcommand_parsers = command_parser.add_subparsers()
+        subcommand_argument_dict = command.command_spec.argparse_arguments
+        for subcommand, arguments in subcommand_argument_dict.iteritems():
+          subcommand_parser = subcommand_parsers.add_parser(
+              subcommand, add_help=False)
+          self._ConfigureCommandArgumentParserArguments(
+              subcommand_parser, arguments, gsutil_api)
+      else:
+        self._ConfigureCommandArgumentParserArguments(
+            command_parser, command.command_spec.argparse_arguments, gsutil_api)
+
+  def RunNamedCommand(self, command_name, args=None, headers=None, debug=0,
+                      trace_token=None, parallel_operations=False,
+                      skip_update_check=False, logging_filters=None,
+                      do_shutdown=True, perf_trace_token=None,
+                      user_project=None,
+                      collect_analytics=False):
+    """Runs the named command.
+
+    Used by gsutil main, commands built atop other commands, and tests.
+
+    Args:
+      command_name: The name of the command being run.
+      args: Command-line args (arg0 = actual arg, not command name ala bash).
+      headers: Dictionary containing optional HTTP headers to pass to boto.
+      debug: Debug level to pass in to boto connection (range 0..3).
+      trace_token: Trace token to pass to the underlying API.
+      parallel_operations: Should command operations be executed in parallel?
+      skip_update_check: Set to True to disable checking for gsutil updates.
+      logging_filters: Optional list of logging.Filters to apply to this
+          command's logger.
+      do_shutdown: Stop all parallelism framework workers iff this is True.
+      perf_trace_token: Performance measurement trace token to pass to the
+          underlying API.
+      user_project: The project to bill this request to.
+      collect_analytics: Set to True to collect an analytics metric logging this
+          command.
+
+    Raises:
+      CommandException: if errors encountered.
+
+    Returns:
+      Return value(s) from Command that was run.
+    """
+    command_changed_to_update = False
     if (not skip_update_check and
-        self._MaybeCheckForAndOfferSoftwareUpdate(command_name, debug)):
+        self.MaybeCheckForAndOfferSoftwareUpdate(command_name, debug)):
       command_name = 'update'
+      command_changed_to_update = True
       args = ['-n']
+
+      # Check for opt-in analytics.
+      if IsRunningInteractively() and collect_analytics:
+        metrics.CheckAndMaybePromptForAnalyticsEnabling()
 
     if not args:
       args = []
@@ -159,19 +273,23 @@ class CommandRunner(object):
     if command_name not in self.command_map:
       close_matches = difflib.get_close_matches(
           command_name, self.command_map.keys(), n=1)
-      if len(close_matches):
+      if close_matches:
         # Instead of suggesting a deprecated command alias, suggest the new
         # name for that command.
         translated_command_name = (
             OLD_ALIAS_MAP.get(close_matches[0], close_matches)[0])
         print >> sys.stderr, 'Did you mean this?'
         print >> sys.stderr, '\t%s' % translated_command_name
+      elif command_name == 'update' and gslib.IS_PACKAGE_INSTALL:
+        sys.stderr.write(
+            'Update command is not supported for package installs; '
+            'please instead update using your package manager.')
+
       raise CommandException('Invalid command "%s".' % command_name)
     if '--help' in args:
       new_args = [command_name]
       original_command_class = self.command_map[command_name]
-      subcommands = original_command_class.help_spec.get(
-          SUBCOMMAND_HELP_TEXT, {}).keys()
+      subcommands = original_command_class.help_spec.subcommand_help_text.keys()
       for arg in args:
         if arg in subcommands:
           new_args.append(arg)
@@ -179,29 +297,52 @@ class CommandRunner(object):
       args = new_args
       command_name = 'help'
 
-    args = HandleArgCoding(args)
+    HandleArgCoding(args)
+    HandleHeaderCoding(headers)
 
     command_class = self.command_map[command_name]
     command_inst = command_class(
-        self, args, headers, debug, parallel_operations, self.config_file_list,
-        self.bucket_storage_uri_class, test_method, logging_filters,
-        command_alias_used=command_name)
+        self, args, headers, debug, trace_token, parallel_operations,
+        self.bucket_storage_uri_class, self.gsutil_api_class_map_factory,
+        logging_filters, command_alias_used=command_name,
+        perf_trace_token=perf_trace_token, user_project=user_project)
 
-    return_values = command_inst.RunCommand()
-    if MultiprocessingIsAvailable()[0]:
+    # Log the command name, command alias, and sub-options after being parsed by
+    # RunCommand and the command constructor. For commands with subcommands and
+    # suboptions, we need to log the suboptions again within the command itself
+    # because the command constructor will not parse the suboptions fully.
+    if collect_analytics:
+      metrics.LogCommandParams(command_name=command_inst.command_name,
+                               sub_opts=command_inst.sub_opts,
+                               command_alias=command_name)
+
+    return_code = command_inst.RunCommand()
+
+    if CheckMultiprocessingAvailableAndInit().is_available and do_shutdown:
       ShutDownGsutil()
-    return return_values
+    if GetFailureCount() > 0:
+      return_code = 1
+    if command_changed_to_update:
+      # If the command changed to update, the user's original command was
+      # not executed.
+      return_code = 1
+      print '\n'.join(textwrap.wrap(
+          'Update was successful. Exiting with code 1 as the original command '
+          'issued prior to the update was not executed and should be re-run.'))
+    return return_code
 
-  def _MaybeCheckForAndOfferSoftwareUpdate(self, command_name, debug):
-    """Checks the last time we checked for an update, and if it's been longer
-       than the configured threshold offers the user to update gsutil.
+  def MaybeCheckForAndOfferSoftwareUpdate(self, command_name, debug):
+    """Checks the last time we checked for an update and offers one if needed.
 
-      Args:
-        command_name: The name of the command being run.
-        debug: Debug level to pass in to boto connection (range 0..3).
+    Offer is made if the time since the last update check is longer
+    than the configured threshold offers the user to update gsutil.
 
-      Returns:
-        True if the user decides to update.
+    Args:
+      command_name: The name of the command being run.
+      debug: Debug level to pass in to boto connection (range 0..3).
+
+    Returns:
+      True if the user decides to update.
     """
     # Don't try to interact with user if:
     # - gsutil is not connected to a tty (e.g., if being run from cron);
@@ -219,11 +360,15 @@ class CommandRunner(object):
     # - user specified gs_host (which could be a non-production different
     #   service instance, in which case credentials won't work for checking
     #   gsutil tarball).
+    # - user is using a Cloud SDK install (which should only be updated via
+    #   gcloud components update)
+    logger = logging.getLogger()
     gs_host = boto.config.get('Credentials', 'gs_host', None)
     if (not IsRunningInteractively()
         or command_name in ('config', 'update', 'ver', 'version')
-        or not logging.getLogger().isEnabledFor(logging.INFO)
-        or gs_host):
+        or not logger.isEnabledFor(logging.INFO)
+        or gs_host
+        or os.environ.get('CLOUDSDK_WRAPPER') == '1'):
       return False
 
     software_update_check_period = boto.config.getint(
@@ -250,8 +395,13 @@ class CommandRunner(object):
 
     if (cur_ts - last_checked_ts
         > software_update_check_period * SECONDS_PER_DAY):
-      suri_builder = StorageUriBuilder(debug, self.bucket_storage_uri_class)
-      cur_ver = LookUpGsutilVersion(suri_builder.StorageUri(GSUTIL_PUB_TARBALL))
+      # Create a credential-less gsutil API to check for the public
+      # update tarball.
+      gsutil_api = GcsJsonApi(self.bucket_storage_uri_class, logger,
+                              DiscardMessagesQueue(),
+                              credentials=NoOpCredentials(), debug=debug)
+
+      cur_ver = LookUpGsutilVersion(gsutil_api, GSUTIL_PUB_TARBALL)
       with open(LAST_CHECKED_FOR_GSUTIL_UPDATE_TIMESTAMP_FILE, 'w') as f:
         f.write(str(cur_ts))
       (g, m) = CompareVersions(cur_ver, gslib.VERSION)
@@ -259,9 +409,9 @@ class CommandRunner(object):
         print '\n'.join(textwrap.wrap(
             'A newer version of gsutil (%s) is available than the version you '
             'are running (%s). NOTE: This is a major new version, so it is '
-            'strongly recommended that you review the release note details at %s '
-            'before updating to this version, especially if you use gsutil in '
-            'scripts.' % (cur_ver, gslib.VERSION, RELEASE_NOTES_URL)))
+            'strongly recommended that you review the release note details at '
+            '%s before updating to this version, especially if you use gsutil '
+            'in scripts.' % (cur_ver, gslib.VERSION, RELEASE_NOTES_URL)))
         if gslib.IS_PACKAGE_INSTALL:
           return False
         print

@@ -3,10 +3,7 @@
 	url = git://github.com/boto/boto.git
 [submodule "third_party/httplib2"]
 	path = third_party/httplib2
-	url = git://github.com/jcgregorio/httplib2.git
-[submodule "third_party/google-api-python-client"]
-	path = third_party/google-api-python-client
-	url = git://github.com/gsutil-mirrors/google-api-python-client.git
+	url = git://github.com/httplib2/httplib2.git
 [submodule "third_party/python-gflags"]
 	path = third_party/python-gflags
 	url = git://github.com/gsutil-mirrors/python-gflags.git
@@ -22,3 +19,36 @@
 [submodule "third_party/retry-decorator"]
 	path = third_party/retry-decorator
 	url = https://github.com/pnpnpn/retry-decorator.git
+[submodule "third_party/gcs-oauth2-boto-plugin"]
+	path = third_party/gcs-oauth2-boto-plugin
+	url = https://github.com/GoogleCloudPlatform/gcs-oauth2-boto-plugin.git
+[submodule "third_party/oauth2client"]
+	path = third_party/oauth2client
+	url = https://github.com/google/oauth2client.git
+[submodule "third_party/six"]
+	path = third_party/six
+	url = https://github.com/gsutil-mirrors/six.git
+[submodule "third_party/apitools"]
+	path = third_party/apitools
+	url = git://github.com/google/apitools.git
+[submodule "third_party/protorpc"]
+	path = third_party/protorpc
+	url = git://github.com/google/protorpc.git
+[submodule "third_party/rsa"]
+	path = third_party/rsa
+	url = https://github.com/gsutil-mirrors/rsa.git
+[submodule "third_party/pyasn1"]
+	path = third_party/pyasn1
+	url = https://github.com/gsutil-mirrors/pyasn1.git
+[submodule "third_party/pyasn1-modules"]
+	path = third_party/pyasn1-modules
+	url = https://github.com/gsutil-mirrors/pyasn1-modules.git
+[submodule "third_party/mock"]
+	path = third_party/mock
+	url = git://github.com/gsutil-mirrors/mock.git
+[submodule "third_party/funcsigs"]
+	path = third_party/funcsigs
+	url = git://github.com/testing-cabal/funcsigs.git
+[submodule "third_party/argcomplete"]
+	path = third_party/argcomplete
+	url = https://github.com/kislyuk/argcomplete.git

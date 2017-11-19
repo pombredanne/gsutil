@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# Copyright 2011 Google Inc.
+# Copyright 2011 Google Inc. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,7 +17,9 @@
 """Setup installation module for gsutil."""
 
 import os
-from setuptools import setup, find_packages
+
+from setuptools import find_packages
+from setuptools import setup
 from setuptools.command import build_py
 from setuptools.command import sdist
 
@@ -33,22 +35,30 @@ management tasks, including:
 """
 
 requires = [
-    'boto==2.22.1',
-    'httplib2>=0.8',
-    'python-gflags>=2.0',
-    'google-api-python-client>=1.1',
-    'pyOpenSSL>=0.13',
+    'argcomplete>=1.8.2',
+    'boto==2.48.0',
     'crcmod>=1.7',
+    'gcs-oauth2-boto-plugin>=1.14',
+    'google-apitools==0.5.17',
+    'httplib2>=0.10.3',
+    # TODO: Sync submodule with tag referenced here once #339 is fixed in mock.
+    'mock==2.0.0',
+    'oauth2client==2.2.0',
+    'pyOpenSSL>=0.13',
+    'python-gflags>=2.0',
+    'retry_decorator>=1.0.0',
+    'six>=1.9.0',
     # Not using 1.02 because of:
     #   https://code.google.com/p/socksipy-branch/issues/detail?id=3
     'SocksiPy-branch==1.01',
-    'retry_decorator>=1.0.0',
 ]
 
 dependency_links = [
     # Note: this commit ID should be kept in sync with the 'third_party/boto'
     # entry in 'git submodule status'.
-    'https://github.com/boto/boto/archive/7cb344c382c3acb95038cf54bf8a84d5242318b9.tar.gz#egg=boto-2.22.1',
+    # pylint: disable=line-too-long
+    'https://github.com/boto/boto/archive/6c5b98861d726fdd5e05702972b14692e73e84f4.tar.gz#egg=boto-2.48.0',
+    # pylint: enable=line-too-long
 ]
 
 CURDIR = os.path.abspath(os.path.dirname(__file__))
@@ -62,16 +72,17 @@ with open(os.path.join(CURDIR, 'CHECKSUM'), 'r') as f:
 
 
 def PlaceNeededFiles(self, target_dir):
+  """Populates necessary files into the gslib module and unit test modules."""
   target_dir = os.path.join(target_dir, 'gslib')
   self.mkpath(target_dir)
 
   # Copy the gsutil root VERSION file into gslib module.
-  with open(os.path.join(target_dir, 'VERSION'), 'w') as f:
-    f.write(VERSION)
+  with open(os.path.join(target_dir, 'VERSION'), 'w') as fp:
+    fp.write(VERSION)
 
   # Copy the gsutil root CHECKSUM file into gslib module.
-  with open(os.path.join(target_dir, 'CHECKSUM'), 'w') as f:
-    f.write(CHECKSUM)
+  with open(os.path.join(target_dir, 'CHECKSUM'), 'w') as fp:
+    fp.write(CHECKSUM)
 
   # Copy the Boto test module required by gsutil unit tests.
   tests_dir = os.path.join(target_dir, 'tests')
@@ -87,19 +98,20 @@ def PlaceNeededFiles(self, target_dir):
   if not os.path.isfile(mock_storage_src):
     raise Exception('Unable to find required boto test source file at %s or %s.'
                     % (mock_storage_src1, mock_storage_src2))
-  with open(mock_storage_src, 'r') as f:
-    mock_storage_contents = f.read()
-  with open(mock_storage_dst, 'w') as f:
-    f.write('#\n'
-            '# This file was copied during gsutil package generation from\n'
-            '# the Boto test suite, originally located at:\n'
-            '#   tests/integration/s3/mock_storage_service.py\n'
-            '# DO NOT MODIFY\n'
-            '#\n\n')
-    f.write(mock_storage_contents)
+  with open(mock_storage_src, 'r') as fp:
+    mock_storage_contents = fp.read()
+  with open(mock_storage_dst, 'w') as fp:
+    fp.write('#\n'
+             '# This file was copied during gsutil package generation from\n'
+             '# the Boto test suite, originally located at:\n'
+             '#   tests/integration/s3/mock_storage_service.py\n'
+             '# DO NOT MODIFY\n'
+             '#\n\n')
+    fp.write(mock_storage_contents)
 
 
 class CustomBuildPy(build_py.build_py):
+  """Excludes update command from package-installed versions of gsutil."""
 
   def byte_compile(self, files):
     for filename in files:
@@ -127,8 +139,8 @@ class CustomSDist(sdist.sdist):
 setup(
     name='gsutil',
     version=VERSION,
-    url='https://developers.google.com/storage/docs/gsutil',
-    download_url='https://developers.google.com/storage/docs/gsutil_install',
+    url='https://cloud.google.com/storage/docs/gsutil',
+    download_url='https://cloud.google.com/storage/docs/gsutil_install',
     license='Apache 2.0',
     author='Google Inc.',
     author_email='gs-team@google.com',
@@ -143,6 +155,10 @@ setup(
         'Intended Audience :: System Administrators',
         'License :: OSI Approved :: Apache Software License',
         'Natural Language :: English',
+        'Programming Language :: Python',
+        'Programming Language :: Python :: 2',
+        'Programming Language :: Python :: 2.6',
+        'Programming Language :: Python :: 2.7',
         'Topic :: System :: Filesystems',
         'Topic :: Utilities',
     ],

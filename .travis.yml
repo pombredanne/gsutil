@@ -1,0 +1,13 @@
+language: python
+python:
+  - "2.7"
+  - "pypy"
+before_install:
+  - sudo rm -f /etc/boto.cfg
+# command to install dependencies
+install:
+  - pip install .
+# command to run tests
+script:
+  - gsutil version -l
+  - gsutil -o 'GSUtil:default_project_id=999999999' test -u

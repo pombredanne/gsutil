@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # Copyright 2012 Google Inc. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,16 +12,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Additional help about object versioning."""
 
-from gslib.help_provider import HELP_NAME
-from gslib.help_provider import HELP_NAME_ALIASES
-from gslib.help_provider import HELP_ONE_LINE_SUMMARY
+from __future__ import absolute_import
+
 from gslib.help_provider import HelpProvider
-from gslib.help_provider import HELP_TEXT
-from gslib.help_provider import HelpType
-from gslib.help_provider import HELP_TYPE
 
-_detailed_help_text = ("""
+_DETAILED_HELP_TEXT = ("""
 <B>OVERVIEW</B>
   Versioning-enabled buckets maintain an archive of objects, providing a way to
   un-delete data that you accidentally deleted, or to retrieve older versions of
@@ -44,13 +42,13 @@ _detailed_help_text = ("""
   data. Both generation and metageneration can be used with concurrency control
   (discussed in a later section).
 
-  To work with object versioning in gsutil, you can use a flavor of storage URIs
+  To work with object versioning in gsutil, you can use a flavor of storage URLs
   that that embed the object generation, which we refer to as version-specific
-  URIs. For example, the version-less object URI:
+  URLs. For example, the version-less object URL:
 
     gs://bucket/object
 
-  might have have two versions, with these version-specific URIs:
+  might have have two versions, with these version-specific URLs:
 
     gs://bucket/object#1360383693690000
     gs://bucket/object#1360383802725000
@@ -74,7 +72,7 @@ _detailed_help_text = ("""
     gsutil ls -a gs://bucket
 
   You can also specify particular objects for which you want to find the
-  version-specific URI(s), or you can use wildcards:
+  version-specific URL(s), or you can use wildcards:
 
     gsutil ls -a gs://bucket/object1 gs://bucket/images/*.jpg
 
@@ -90,8 +88,8 @@ _detailed_help_text = ("""
   then gs://bucket/object#1360102216114000 is the latest version and
   gs://bucket/object#1360035307075000 is the oldest available version.
 
-  If you specify version-less URIs with gsutil, you will operate on the
-  latest not-deleted version of an object, for example:
+  If you specify version-less URLs with gsutil, you will operate only on the
+  live version of an object, for example:
 
     gsutil cp gs://bucket/object ./dir
 
@@ -99,7 +97,14 @@ _detailed_help_text = ("""
 
     gsutil rm gs://bucket/object
 
-  To operate on a specific object version, use a version-specific URI.
+  The same is true when using wildcards like * and **. These will operate only
+  on the live version of matching objects. For example, this
+  command will remove the live version and create an archived version for each
+  object in a bucket:
+
+    gsutil rm gs://bucket/**
+
+  To operate on a specific object version, use a version-specific URL.
   For example, suppose the output of the above gsutil ls -a command is:
 
     gs://bucket/object#1360035307075000
@@ -111,14 +116,14 @@ _detailed_help_text = ("""
 
   will retrieve the second most recent version of the object.
 
-  Note that version-specific URIs cannot be the target of the gsutil cp
+  Note that version-specific URLs cannot be the target of the gsutil cp
   command (trying to do so will result in an error), because writing to a
   versioned object always creates a new version.
 
   If an object has been deleted, it will not show up in a normal gsutil ls
   listing (i.e., ls without the -a option). You can restore a deleted object by
   running gsutil ls -a to find the available versions, and then copying one of
-  the version-specific URIs to the version-less URI, for example:
+  the version-specific URLs to the version-less URL, for example:
 
     gsutil cp gs://bucket/object#1360101007329000 gs://bucket/object
 
@@ -132,9 +137,25 @@ _detailed_help_text = ("""
 
     gsutil mv gs://bucket/object#1360101007329000 gs://bucket/object
 
-  If you want to remove all versions of an object use the gsutil rm -a option:
+  If you remove the live version of an object in a versioning-enabled bucket,
+  an archived version will be preserved:
+
+    gsutil rm gs://bucket/object
+
+  If you remove a version-specific URL for an object (even if it is the live
+  version), that version will be deleted permanently:
+
+    gsutil rm gs://bucket/object#1360101007329000
+
+  If you want to remove all versions of an object, use the gsutil rm -a option:
 
     gsutil rm -a gs://bucket/object
+
+  If you want to remove all versions of all objects in a bucket (and the bucket
+  itself), use the rm -r option (-r implies the -a option):
+
+    gsutil rm -r gs://bucket
+
 
   Note that there is no limit to the number of older versions of an object you
   will create if you continue to upload to the same object in a versioning-
@@ -145,7 +166,7 @@ _detailed_help_text = ("""
 <B>COPYING VERSIONED BUCKETS</B>
   You can copy data between two versioned buckets, using a command like:
 
-    gsutil cp -R gs://bucket1/* gs://bucket2
+    gsutil cp -r -A gs://bucket1/* gs://bucket2
 
   When run using versioned buckets, this command will cause every object version
   to be copied. The copies made in gs://bucket2 will have different generation
@@ -169,12 +190,6 @@ _detailed_help_text = ("""
   same sequence of sizes in both listings), but the generation numbers (and
   timestamps) are newer in gs://bucket2.
 
-  WARNING: If you use the gsutil -m option when copying the objects (to parallel
-  copy the data), object version ordering will NOT be preserved. All object
-  versions will be copied, but (for example) the latest/live version in the
-  destination bucket might be from one of the earlier versions in the source
-  bucket (and similarly, other versions may be out of order). When copying
-  versioned data it is advisable not to use the gsutil -m option.
 
 
 <B>CONCURRENCY CONTROL</B>
@@ -201,7 +216,7 @@ _detailed_help_text = ("""
   in stale (or, depending on the application, corrupt) data.
 
   To prevent this, you can find the version-specific name of the object that was
-  created, and then use the information contained in that URI to specify an
+  created, and then use the information contained in that URL to specify an
   x-goog-if-generation-match header on a subsequent gsutil cp command. You can
   do this in two steps. First, use the gsutil cp -v option at upload time to get
   the version-specific name of the object that was created, for example:
@@ -257,22 +272,19 @@ _detailed_help_text = ("""
 
 <B>FOR MORE INFORMATION</B>
   For more details on how to use versioning and preconditions, see
-  https://developers.google.com/storage/docs/object-versioning
+  https://cloud.google.com/storage/docs/object-versioning
 """)
 
 
 class CommandOptions(HelpProvider):
   """Additional help about object versioning."""
 
-  help_spec = {
-    # Name of command or auxiliary help info for which this help applies.
-    HELP_NAME : 'versions',
-    # List of help name aliases.
-    HELP_NAME_ALIASES : ['concurrency', 'concurrency control'],
-    # Type of help:
-    HELP_TYPE : HelpType.ADDITIONAL_HELP,
-    # One line summary of this help.
-    HELP_ONE_LINE_SUMMARY : 'Object Versioning and Concurrency Control',
-    # The full help text.
-    HELP_TEXT : _detailed_help_text,
-  }
+  # Help specification. See help_provider.py for documentation.
+  help_spec = HelpProvider.HelpSpec(
+      help_name='versions',
+      help_name_aliases=['concurrency', 'concurrency control'],
+      help_type='additional_help',
+      help_one_line_summary='Object Versioning and Concurrency Control',
+      help_text=_DETAILED_HELP_TEXT,
+      subcommand_help_text={},
+  )
